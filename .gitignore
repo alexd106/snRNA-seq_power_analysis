@@ -1,0 +1,5 @@
+data/*.rds
+.Rhistory
+.DS_Store
+.Rproj.user/
+parameter_tuning.R
