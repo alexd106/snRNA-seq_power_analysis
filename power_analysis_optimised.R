@@ -284,11 +284,6 @@ for (ns in sample_sizes) {
   }
 }
 
-results <- data.table::rbindlist(results_list)
-heat_df <- results %>%
-  group_by(ns, nc) %>%
-  summarise(mean_power = mean(power, na.rm = TRUE), .groups = "drop")
-
 results <- data.table::rbindlist(results_list, use.names = TRUE, fill = TRUE)
 
 # =========================
