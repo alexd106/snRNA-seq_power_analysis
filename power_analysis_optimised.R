@@ -1,9 +1,8 @@
 # Simulation based power analysis for single nuclei RNA-seq
-# For: Speakman, Mitchell (BBSRC application)
 # By: Alex
 
 # Date created: 2025-08-01 09:15:00
-# Date last modified: 2025-08-12 10:37:00 
+# Date last modified: 2025-08-13 12:18:18 
 
 # GENERAL APPROACH & RATIONALE:
 #
@@ -133,17 +132,19 @@ ref <- prepSim(
 # =========================
 # Grid & global params
 # =========================
-sample_sizes <- 4:10                  # samples per group
-cell_counts  <- seq(1000, 5000, 200)  # cells per sample
+sample_sizes <- 5:10                  # samples per group
+cell_counts  <- seq(2000, 5000, 400)  # cells per sample
 ngenes       <- min(1000L, nrow(ref)) # <= nrow(ref)
+# ngenes       <- min(800L, nrow(ref)) # <= nrow(ref)
 nclusters    <- length(unique(colData(ref)$cluster_id))
 lfc_val      <- 2
 fdr_cutoff   <- 0.05
 # p_dd must have length 6 in this muscat version: (ee, ep, de, dp, dm, db)
 p_dd <- c(0.9, 0, 0.1, 0, 0, 0)
+# p_dd <- c(0.85, 0, 0.15, 0, 0, 0)
 
 # =========================
-# Helpers (kept minimal)
+# Helper functions
 # =========================
 
 # Enforce minimum cells per (sample, cluster) so pbDS won't drop everything
@@ -199,7 +200,7 @@ one_run <- function(ns, nc, max_tries = 10) {
     tried <- tried + 1L
     sim <- simData(
       ref, ns = ns, nc = nc, ng = ngenes, nk = nclusters,
-      p_dd = p_dd, lfc = lfc_val, paired = FALSE
+      p_dd = p_dd, lfc = lfc_val, paired = FALSE, force = TRUE
     )
     gi_std <- get_gene_info_std(sim)
     de_counts <- table(norm_cl(gi_std$cluster_id)[gi_std$category == "de"])
@@ -262,15 +263,31 @@ one_run <- function(ns, nc, max_tries = 10) {
 # =========================
 # Run grid
 # =========================
-results_list <- vector("list", length(sample_sizes) * length(cell_counts))
-k <- 0L
+#results_list <- vector("list", length(sample_sizes) * length(cell_counts))
+#k <- 0L
+#for (ns in sample_sizes) {
+#  for (nc in cell_counts) {
+#    k <- k + 1L
+#    results_list[[k]] <- one_run(ns, nc)
+#    if (k %% 10 == 0) gc(verbose = FALSE)
+#  }
+#}
+
+n_reps <- 20  # try 30–50 for smoother curves
+
+results_list <- list()
 for (ns in sample_sizes) {
   for (nc in cell_counts) {
-    k <- k + 1L
-    results_list[[k]] <- one_run(ns, nc)
-    if (k %% 10 == 0) gc(verbose = FALSE)
+    for (rep_i in seq_len(n_reps)) {
+      results_list[[length(results_list) + 1]] <- one_run(ns, nc)
+    }
   }
 }
+
+results <- data.table::rbindlist(results_list)
+heat_df <- results %>%
+  group_by(ns, nc) %>%
+  summarise(mean_power = mean(power, na.rm = TRUE), .groups = "drop")
 
 results <- data.table::rbindlist(results_list, use.names = TRUE, fill = TRUE)
 
@@ -280,12 +297,18 @@ results <- data.table::rbindlist(results_list, use.names = TRUE, fill = TRUE)
 # Mean power by ns × nc (summary table)
 summary_power <- results %>%
   group_by(ns, nc) %>%
-  summarise(mean_power = mean(power, na.rm = TRUE), .groups = "drop") %>%
+  summarise(
+    mean_power = mean(power, na.rm = TRUE),
+    min_power  = min(power, na.rm = TRUE),
+    max_power  = max(power, na.rm = TRUE),
+    range_power = max(power, na.rm = TRUE) - min(power, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
   arrange(ns, nc)
-
+  
 print(head(summary_power, 10))
 # Save summary as CSV for the grant appendix
-write.csv(summary_power, file = "power_summary_ns_nc.csv", row.names = FALSE)
+write.csv(summary_power, file = "./output/power_summary_ns_nc_v2.csv", row.names = FALSE)
 
 # Heatmap of mean power
 p1 <- ggplot(summary_power, aes(x = factor(ns), y = nc, fill = mean_power)) +
@@ -295,6 +318,27 @@ p1 <- ggplot(summary_power, aes(x = factor(ns), y = nc, fill = mean_power)) +
        title = "Power vs. sample size and cells") +
   theme_minimal(base_size = 12)
 
+# Filter for 3600 cells per sample
+plot_df <- results %>%
+  filter(nc == 3600)
+
+# power by sample size, coloured by cluster for 3600 cells
+p_clusters <- ggplot(plot_df, aes(x = ns, y = power, color = cluster, group = cluster)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  labs(
+    title = "Power across sample sizes (nc = 3600 cells per sample)",
+    x = "Samples per group",
+    y = "Power",
+    color = "Cluster"
+  ) +
+  scale_x_continuous(breaks = sort(unique(plot_df$ns))) +
+  theme_minimal(base_size = 13) +
+  theme(
+    legend.position = "right",
+    panel.grid.minor = element_blank()
+  )
+
 # Power by cluster (optional diagnostic)
 p2 <- ggplot(results, aes(x = ns, y = power, color = cluster, group = cluster)) +
   geom_line() +
@@ -302,12 +346,9 @@ p2 <- ggplot(results, aes(x = ns, y = power, color = cluster, group = cluster)) 
   theme_minimal(base_size = 11) +
   labs(title = "Power by cluster", x = "Samples per group", y = "Power")
 
-print(p1); print(p2)
-
-
-# SUGGESTED TEXT
-
-# We conducted a simulation-based power analysis for single-nucleus RNA-seq using parameters estimated from the murine hypothalamus atlas HypoMap (DOI: 10.17863/CAM.87955). The reference dataset was trimmed to the two study-relevant groups and five most abundant cell types, retaining only sparse counts for highly variable genes. Negative binomial parameters were estimated using the muscat R package, and simulations were run across a grid of biological replicates and cells per sample, introducing 10% truly DE genes with fixed log₂ fold-change. Pseudobulk DE testing with edgeR was applied, and power was calculated as the proportion of true DE genes detected at FDR ≤ 0.05. For a design with 8 mice per group and 3,600 cells per sample, the estimated mean power across clusters was [XX%], with cluster-specific power ranging from [YY%] to [ZZ%].
+print(p1)
+print(p_clusters)
+print(p2)
 
 # GENERAL SUMMARY
 
