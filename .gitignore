@@ -3,3 +3,4 @@ data/*.rds
 .DS_Store
 .Rproj.user/
 parameter_tuning.R
+suggested_text.txt
